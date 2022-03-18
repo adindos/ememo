@@ -1,0 +1,30 @@
+{
+	"name": "maraya/cake-php-excel",
+	"type": "cakephp-plugin",
+	"description": "CakePHP excel generator using PHPExcel library",
+	"keywords": [
+		"cakephp",
+		"maraya",
+		"excel",
+		"phpexcel"
+	],
+	"homepage": "https://github.com/maraya/CakePHPExcel",
+	"license": "MIT",
+	"authors": [
+		{
+			"name": "Marcelo Araya-Gómez Reyes",
+			"email": "marayag@gmail.com"
+		}
+	],
+	"config": {
+    	"vendor-dir": "Vendor/"
+	},
+	"require": {
+		"php": ">=5.2.0",
+		"ext-gd": "*",
+		"ext-zip": "*",
+		"ext-xml": "*",
+		"composer/installers": "~1.0",
+		"phpoffice/phpexcel": "~1.8.0"
+	}
+}

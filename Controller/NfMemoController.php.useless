@@ -1,0 +1,942 @@
+<?php
+
+/*
+
+*	=========================================================================
+
+*	UNITAR MeMs 2015 
+
+*	@vendor GR Tech Sdn Bhd
+
+*	@team Aisyah,Syikin,Nizam
+
+*	=========================================================================
+
+*	
+
+*	[ File ]
+
+*		RequestorController.php
+
+*			- Controller to control the action for NfMemo
+
+*	[ Description ]
+
+*		< some description here >
+
+*	[ HELP ]
+
+*		App::uses()  - Class to be used in the the controller (eg: Blowfish,etc)
+
+*		$layout - define the layout which is to be used (in View/Layout)
+
+*		$uses - the model to be use inside the controller
+
+*		$this->render - will render specific file which defined. If none,it will take the default according to action name (in View/[ControllerName]/)
+
+*		$components - CakePHP components to be used in the page. (eg: AuthComponent,etc)
+
+*
+
+*	[--(TO DO at the bottom of the page)--]
+
+*/
+
+App::uses('AppController', 'Controller');
+
+
+
+class NfMemoController extends AppController {
+
+	public $layout = 'mems';
+	public $uses = array('Department','NfMemo','User','NfStatus','NfReviewer','NfRemark','NfRemarkAssign','NfRemarkFeedback','Staff','NfMemoTo');
+
+	/*
+
+	*	index()
+
+	*	< description of function >
+
+	*	@ < author of function editor >
+
+	*/	
+	public function index($memo_id=null,$edit=null){
+
+		$user = $this->getAuth();
+		$userid=$user['user_id'];
+		$this->NfMemo->contain(array('NfStatus'));
+		$memo=$this->NfMemo->find('all',array('conditions'=>array('NfMemo.user_id'=>$userid))); //debug($memo);exit();
+		//delete incomplete memo 
+		if (!empty($memo)){
+
+			foreach ($memo as $value) {
+				if (empty($value['NfMemo']['ref_no']))
+			 		$this->NfMemo->delete($value['NfMemo']['memo_id']);
+			}
+
+		}
+		$memo=$this->NfMemo->find('all',array('conditions'=>array('NfMemo.user_id'=>$userid)));		
+		
+		$this->set('memo',$memo);	
+		$this->set('edit',$edit);	
+	}
+
+	public function dashboard($memo_id=null){
+		$user = $this->getAuth();
+		$userid = $user['user_id'];
+		$department_id=$user['department_id'];
+
+		#non-financial memo details
+		$this->NfMemo->contain(array(
+							'User'=>array('fields'=>array('staff_name','designation')),
+							'User.Department'=>array('fields'=>array('department_name')),
+							'Department',
+						));
+		$memo = $this->NfMemo->find('first',array('conditions'=>array('NfMemo.memo_id'=>$memo_id)));
+		$this->set('memo',$memo);
+		//debug($memo); exit();			
+
+		# reviewer
+		$this->NfStatus->contain(array(
+							'NfReviewer',
+							'NfReviewer.User'=>array('fields'=>array('staff_name','designation')),
+						));
+		$reviewers = $this->NfStatus->find('all',array('conditions'=>array('NfStatus.submission_no'=>$memo['NfMemo']['submission_no'],'NfReviewer.memo_id'=>$memo_id,'NfReviewer.approval_type'=>'reviewer'),'order'=>array('sequence ASC')));
+		$this->set('reviewers',$reviewers);
+		//debug($reviewers); exit();
+
+		# Recommender
+		$this->NfStatus->contain(array(
+							'NfReviewer',
+							'NfReviewer.User'=>array('fields'=>array('staff_name','designation')),
+						));
+		$Recommenders = $this->NfStatus->find('all',array(
+			'conditions'=>array(
+				'NfStatus.submission_no'=>$memo['NfMemo']['submission_no'],
+				'NfReviewer.memo_id'=>$memo_id,
+				'NfReviewer.approval_type'=>'Recommender'),
+				'order'=>array('sequence ASC')));
+		$this->set('Recommenders',$Recommenders);
+		//debug($Recommenders); exit();
+
+		# approver
+		$this->NfStatus->contain(array(
+							'NfReviewer',
+							'NfReviewer.User'=>array('fields'=>array('staff_name','designation')),
+						));
+		$approvers = $this->NfStatus->find('all',array(
+			'conditions'=>array(
+				'NfStatus.submission_no'=>$memo['NfMemo']['submission_no'],
+				'NfReviewer.memo_id'=>$memo_id,
+				'NfReviewer.approval_type'=>'approver'),
+				'order'=>array('sequence ASC')));
+		$this->set('approvers',$approvers);
+
+
+
+
+		
+		//debug($r); exit();
+		$this->set('memo_id',$memo_id);
+	}
+	/*
+
+	*	request()
+
+	*	< description of function >
+
+	*	@ < author of function editor >
+
+	*/	
+
+	public function request($memo_id=null,$edit=null){ 
+		$user = $this->getAuth();
+
+		//find requestor department name
+		$department_id=$user['department_id'];
+		$this->request->data['NfMemo']['department_id']=$department_id; 
+
+   		$this->Department->recursive = -1;
+   		$deptName=$this->Department->find('first',array('conditions'=>array('Department.department_id'=>$department_id)));  
+		$this->set('deptName',$deptName);	
+
+		//find staff list
+   		$this->Staff->recursive = -1;
+		$staffs=$this->Staff->find('list');
+		$this->set('staffs',$staffs);	
+		
+		$selected=array();
+
+		if (!empty($memo_id)){
+			
+			if ($memo_id=='new'){
+				$this->request->data['NfMemo']['user_id']=$user['user_id'];
+				$this->request->data['NfMemo']['department_id']=$user['department_id'];
+				$this->request->data['NfMemo']['submission_no']=0;
+				$this->NfMemo->create();
+				$this->NfMemo->save($this->request->data);
+				$memo_id=$this->NfMemo->id;
+
+			}
+
+			else{				
+				$memo=$this->NfMemo->find('first',array('conditions'=>array('NfMemo.memo_id'=>$memo_id)));
+				$this->request->data=$memo;
+
+				//selected staff
+				$this->NfMemoTo->contain(array('Staff'=>array('fields'=>array('Staff.staff_table_id'))));
+				$selectedStaff=$this->NfMemoTo->find('all',array('conditions'=>array('NfMemoTo.memo_id'=>$memo_id)));
+				if (!empty($selectedStaff)){
+					foreach ($selectedStaff as $value) {
+						$this->request->data['NfMemoTo']['selectedStaff'][]=$value['NfMemoTo']['staff_table_id'];
+					}
+					$selected=$this->request->data['NfMemoTo']['selectedStaff'];
+				}
+			}
+		}
+
+		else
+		$memo_id=null;
+		//debug($edit);exit;
+		$this->set('edit',$edit);	
+		$this->set('memo_id',$memo_id);	
+		$this->set('selected',$selected);
+				
+			
+
+	}
+	public function addMemo($memo_id=null,$edit=null){
+		$user = $this->getAuth();
+		 //debug($this->request->data);exit;
+		if ($this->request->is('post')|| $this->request->is('put')){
+			
+			$this->NfMemo->id=$memo_id;
+			$this->request->data['NfMemo']['user_id']=$user['user_id'];
+			//$this->request->data['FMemo']['submission_no']=0;
+			if (!empty($this->request->data['NfMemo']['date_required']))
+				$this->request->data['NfMemo']['date_required']=date('Y-m-d',strtotime($this->request->data['NfMemo']['date_required']));
+			
+
+			if ($this->NfMemo->save($this->request->data)){
+
+				$memo_id=$this->NfMemo->id;
+				$this->redirect(array('controller'=>'NfMemo','action'=>'confirm',$memo_id)); //goes to confirm page 
+
+				$this->set('memo_id',$memo_id);
+				$this->set('edit',$edit);				
+			}
+		}
+	}
+	/*
+
+	*	validateMemo()
+
+	*	< save memo data and validate no of attachment and staff are filled >
+
+	*	@ < author of function editor >
+
+	*/
+
+	public function validateMemo($memo_id=null,$edit=null){
+		$user = $this->getAuth();
+		//debug($this->request->data);exit;
+		if ($this->request->is('post')|| $this->request->is('put')){
+			$this->NfMemo->id=$memo_id;
+			if (!empty($this->request->data['NfMemo']['date_required']))
+				$this->request->data['NfMemo']['date_required']=date('Y-m-d',strtotime($this->request->data['NfMemo']['date_required']));
+
+			if ($this->NfMemo->save($this->request->data)){
+				$memo_id=$this->NfMemo->id;
+				$this->set('memo_id',$memo_id);
+				//Upload the files
+				// if(!empty($this->request->data['FVendorAttachment']['files'])){
+
+				// 	foreach ($this->request->data['FVendorAttachment']['files'] as $value) {
+				// 		$file = $value;
+
+				// 		$filename = null;
+			 //            if(!empty($file['tmp_name']) && is_uploaded_file($file['tmp_name'])) {
+			 //                 $filename = time().'___'.basename($file['name']); 
+			 //                 if(move_uploaded_file($file['tmp_name'], WWW_ROOT.'files'.DS.'fvendor-attachment'.DS.$filename)){
+
+			 //                 	$this->FVendorAttachment->create();
+				// 	            $this->request->data['FVendorAttachment']['filename'] = $filename;
+				// 	            $this->request->data['FVendorAttachment']['memo_id'] = $memo_id;
+				// 	            $this->FVendorAttachment->save($this->request->data);
+			 //                 }
+			 //            }
+		  //       	}
+				// }
+
+				//check if at least one staff to send memo to has been added
+				$to=$this->NfMemoTo->find('all',array('conditions'=>array('NfMemoTo.memo_id'=>$memo_id)));
+				//check for new vendor has to attach min 3 quotations
+				//$attachmentCount=$this->FVendorAttachment->find('count',array('conditions'=>array('FVendorAttachment.memo_id'=>$memo_id)));
+				
+				if (empty($to)){
+
+					$this->Session->setFlash(__('<b>Please select at least one staff to send memo to.</b>'),'flash.error');
+					return $this->redirect(array('action'=>'request',$memo_id,$edit));
+				}
+
+	   //      	elseif (($this->request->data['NfMemo']['vendor']==0)&&($attachmentCount<3)){
+
+				// 	$this->Session->setFlash(__('<b>Please attach at least three (3) quotations for new vendor.</b>'),'flash.error');
+				// 	return $this->redirect(array('action'=>'request',$memo_id,$edit));
+				// }
+
+				else{
+					//debug($edit);exit;
+					if ($edit){
+
+						//check the relationship of user and memo 
+						$this->NfMemo->contain('NfReviewer');
+						$memo=$this->NfMemo->findByMemoId($memo_id);
+
+						if($user['user_id']==$memo['NfMemo']['user_id']){//user is the creator of the memo, thus update submission no and reinsert status for another round of approval
+							$this->NfMemo->id=$memo_id;
+							$submission_no=$memo['NfMemo']['submission_no']+1;
+							$this->NfMemo->saveField('submission_no',$submission_no);
+
+							foreach ($memo['NfReviewer'] as $value) {
+								
+								//$id = $value['reviewer_id'];
+								$status['NfStatus']['reviewer_id'] = $value['reviewer_id'];
+								$status['NfStatus']['status'] = 'pending';
+								$status['NfStatus']['submission_no'] = $submission_no;
+								$status['NfStatus']['memo_id'] = $memo_id;
+								$this->NfStatus->create();
+								$this->NfStatus->save($status);
+					
+							}
+							
+							$this->Session->setFlash(__('<b>Memo has been re-submitted for review.</b>'),'flash.success');
+
+							return $this->redirect(array('controller'=>'NfMemo','action'=>'dashboard',$memo_id));
+						}
+
+						else{//user is one of the reviewer/approver/finance/recommender
+
+							$this->Session->setFlash(__('<b>Memo has been updated successfully.</b>'),'flash.success');
+
+							return $this->redirect(array('controller'=>'NfMemo','action'=>'dashboard',$memo_id));
+
+						}
+					}
+
+					else{//first submission so go to add reviewer page
+						return $this->redirect(array('action'=>'confirm',$memo_id));
+					}
+					
+				}
+			}
+
+		}
+
+	}
+
+
+	/*
+
+	*	addStaff()
+
+	*	< description of function >
+
+	*	@ < author of function editor >
+
+	*/
+
+	public function addStaff($memo_id=null,$edit=null){ //debug($memo_id); exit();
+		$user = $this->getAuth();
+		if ($this->request->is('post')|| $this->request->is('put')){
+
+				if(empty($memo_id)){
+
+					$this->NfMemo->create();
+					$department_id=$user['department_id'];
+					$this->request->data['NfMemo']['department_id']=$department_id; 
+					$this->request->data['NfMemo']['user_id']=$user['user_id'];
+					
+					if ($this->NfMemo->save($this->request->data)) {
+						
+						$memo_id=$this->NfMemo->id;
+					
+					}
+				}
+				//debug($memo_id);exit();
+			
+				$to=$this->NfMemoTo->find('all',array('conditions'=>array('NfMemoTo.memo_id'=>$memo_id)));
+					
+				//delete first all staff before re-add to ensure no redundancy
+				if (!empty($to)){
+
+					foreach ($to as $value) {
+						$this->NfMemoTo->delete($value['NfMemoTo']['to_id']);
+					}
+				}
+				//save selected staff 
+				if(!empty($this->request->data['NfMemoTo']['selectedStaff'])){
+					
+					foreach ($this->request->data['NfMemoTo']['selectedStaff'] as $value) {
+						$this->request->data['NfMemoTo']['staff_table_id']=$value;
+						$this->request->data['NfMemoTo']['memo_id']=$memo_id;
+						$this->NfMemoTo->create();
+						$this->NfMemoTo->save($this->request->data);
+
+					}
+
+				}
+
+				$this->Session->setFlash('<b>Successfully add/remove staff(s).</b>','flash.success');
+
+		}
+
+		return $this->redirect(array('action'=>'request',$memo_id,$edit));
+		
+
+	}
+
+
+	public function confirm($memo_id=null){  		
+		
+		#reviewer/recommender/approver list
+		$user = $this->getAuth();
+		$this->NfMemo->contain(array('NfReviewer'));
+		$memo = $this->NfMemo->find('first',array('conditions'=>array('NfMemo.memo_id'=>$memo_id))); 
+
+		$this->set('memo_id',$memo_id);
+
+		$reviewers = $this->User->find('list',array('conditions'=>array('User.reviewer'=>1,'User.user_id NOT'=>$user['user_id'])));
+		$this->set('reviewers',$reviewers);
+		$recommenders = $this->User->find('list',array('conditions'=>array('User.recommender'=>1,'User.user_id NOT'=>$user['user_id'])));
+		$this->set('recommenders',$recommenders);	
+		$approvers = $this->User->find('list',array('conditions'=>array('User.approver'=>1,'User.user_id NOT'=>$user['user_id'])));
+		$this->set('approvers',$approvers);
+
+		$selectedReviewers = Set::extract('/NfReviewer[approval_type=reviewer]/user_id',$memo);
+		$this->set('selectedReviewers',$selectedReviewers);
+		$selectedRecommenders = Set::extract('/NfReviewer[approval_type=reviewer]/user_id',$memo);
+		$this->set('selectedRecommenders',$selectedRecommenders);
+		$selectedApprovers = Set::extract('/NfReviewer[approval_type=approver]/user_id',$memo);
+		$this->set('selectedApprovers',$selectedApprovers);
+
+		
+
+	}
+	/*
+
+	*	confirm()
+
+	*	< description of function >
+
+	*	@ < author of function editor >
+
+	*/	
+
+	public function confirmAdd ($memo_id=null){
+		
+		$user = $this->getAuth();
+		if($this->request->is('post')){
+		 //debug($this->request->data);exit();
+			$memo_id = $this->request->data['NfMemo']['memo_id']; 
+			$this->NfMemo->id = $memo_id;
+			$this->NfMemo->saveField('remark',$this->request->data['NfMemo']['remark']);
+
+			$this->NfMemo->recursive = -1;
+			$memo = $this->NfMemo->find('first',array('conditions'=>array('NfMemo.memo_id'=>$memo_id)));
+
+        if (!empty($this->request->data['NfReviewer']['reviewer'])&&!empty($this->request->data['NfReviewer']['recommender'])&&!empty($this->request->data['NfReviewer']['approver'])){
+			$seq=1;
+			foreach($this->request->data['NfReviewer']['reviewer'] as $r):
+				$reviewer['NfReviewer']['memo_id'] = $memo_id;
+				$reviewer['NfReviewer']['user_id'] = $r;
+				$reviewer['NfReviewer']['sequence'] = $seq++;
+				$reviewer['NfReviewer']['approval_type'] = 'reviewer';
+				$this->NfReviewer->create();
+				if($this->NfReviewer->save($reviewer)){
+					$reviewerid = $this->NfReviewer->id;
+					$status['NfStatus']['reviewer_id'] = $reviewerid;
+					$status['NfStatus']['status'] = 'pending';
+					$status['NfStatus']['submission_no'] = $memo['NfMemo']['submission_no'];
+					$status['NfStatus']['memo_id'] = $memo_id;
+					$this->NfStatus->create();
+					$this->NfStatus->save($status);
+				}
+			endforeach;
+
+			//save the recommender
+			foreach($this->request->data['NfReviewer']['recommender'] as $rec):
+				$recommender['NfReviewer']['memo_id']=$memo_id;
+				$recommender['NfReviewer']['user_id'] = $rec;
+				$recommender['NfReviewer']['sequence'] = $seq++;
+				$recommender['NfReviewer']['approval_type'] = 'recommender';
+				$this->NfReviewer->create();
+				if($this->NfReviewer->save($recommender)){
+					$recommenderId=$this->NfReviewer->id;
+					$status['NfStatus']['reviewer_id'] = $recommenderId;
+					$status['NfStatus']['status'] = 'pending';
+					$status['NfStatus']['submission_no'] = $memo['NfMemo']['submission_no'];
+					$status['NfStatus']['memo_id'] = $memo_id;
+					$this->NfStatus->create();
+					$this->NfStatus->save($status);
+
+				}
+			endforeach;
+
+			// save the approver
+			foreach($this->request->data['NfReviewer']['approver'] as $a):
+				$approver['NfReviewer']['memo_id'] = $memo_id;
+				$approver['NfReviewer']['user_id'] = $a;
+				$approver['NfReviewer']['sequence'] = $seq++;
+				$approver['NfReviewer']['approval_type'] = 'approver';
+				$this->NfReviewer->create();
+				if($this->NfReviewer->save($approver)){
+					$approverid = $this->NfReviewer->id;
+					$status['NfStatus']['reviewer_id'] = $approverid;
+					$status['NfStatus']['status'] = 'pending';
+					$status['NfStatus']['submission_no'] = $memo['NfMemo']['submission_no'];
+					$status['NfStatus']['memo_id'] = $memo_id;
+					$this->NfStatus->create();
+					$this->NfStatus->save($status);
+				}
+			endforeach;
+
+			# send email to reviewer ***
+			#$this->sendReviewEmail($memo_id);	
+
+			//if everything is okay then only generate ref no to indicate form is completed
+				
+				$paddedId=str_pad($memo_id,10,"0",STR_PAD_LEFT);
+				$ref_no=date('m/Y',strtotime($memo['NfMemo']['created'])).'/'.$paddedId;
+				$this->NfMemo->saveField('ref_no',$ref_no);
+
+				$this->Session->setFlash('<b>The memo has been submitted for review.</b> <br><small> You will be notified if the status changed later </small>','flash.success');
+				$this->redirect(array('controller'=>'NfMemo','action'=>'dashboard',$memo_id));
+		}
+		else {
+				$this->Session->setFlash('<b>You must select at least one(1) reviewer/finance/approver</b>','flash.error');
+				$this->redirect(array('controller'=>'NfMemo','action'=>'confirm',$memo_id));
+			}
+
+
+		}
+	}	
+	
+
+		public function review($memo_id=null){
+		$user = $this->getAuth();
+		$userid = $user['user_id'];
+		$memo = $this->NfMemo->find('first',array(
+			'conditions' => array('NfMemo.memo_id' => $memo_id),
+			'contain'=>array(
+				'User'=>array('fields'=>array('staff_name','designation'),'Department'=>array('fields'=>array('department_name'))
+				),
+				'NfReviewer',
+				//'FVendorAttachment',
+				'NfMemoTo'=>array('Staff'=>array('fields'=>array('Staff.staff_name'))),
+				//'FMemoBudget',
+				//'FMemoBudget.BItem'
+
+			)
+
+		));
+		$submission_no=$memo['NfMemo']['submission_no'];
+		//debug($memo);exit;
+		//check user privilege, by default disable all buttons
+		$editFlag=false;
+		$approvalFlag=false;
+		$remarkFlag=false;
+		$financeFlag=false;
+
+		$this->NfStatus->contain('NfReviewer');
+		$status=$this->NfStatus->find('all',array('conditions'=>array('NfStatus.memo_id'=>$memo_id,'NfStatus.submission_no'=>$submission_no),'order'=>array('NfReviewer.sequence'=> 'ASC')));
+		
+		if ($user['user_id']==$memo['NfMemo']['user_id']){//if user is the memo requestor,only allow edit if the current submission status if any of reviewer reject
+			
+			foreach ($status as $value) {
+				//if ($value['FStatus']['status']=='rejected'&&$value['FReviewer']['approval_type']!='approver'){
+				if ($value['NfStatus']['status']=='rejected'){
+					$editFlag=true;
+					break;
+				}
+			}
+			
+			$remarkFlag=true;
+		}
+		else{//if user is one of the reviewers
+			for($i=0;$i<count($status);$i++){
+
+				if($status[$i]['NfReviewer']['user_id']==$user['user_id']){
+					$remarkFlag=true;
+
+					if ($status[$i]['NfReviewer']['approval_type']=='finance'){
+						$financeFlag=true;
+					}
+					if ($status[$i]['NfStatus']['status']=='pending'){
+						if ($i==0){//first reviewer
+							$editFlag=true;
+							$approvalFlag=true;
+
+							break;
+						}
+						else{
+							if($status[$i-1]['NfStatus']['status']=='approved'){
+								$editFlag=true;
+								$approvalFlag=true;
+								break;
+							}
+						}
+					}
+				}
+				
+			}
+
+		}
+		//debug($memo);exit;
+ 		$this->set('memo',$memo);
+ 		$this->set('editFlag',$editFlag);
+ 		$this->set('remarkFlag',$remarkFlag);
+ 		$this->set('approvalFlag',$approvalFlag);
+ 		$this->set('financeFlag',$financeFlag);
+ 		//debug($memo);exit;
+ 		$reviewer=$this->query1($memo_id,'reviewer',$submission_no);
+ 		$recommender=$this->query1($memo_id,'recommender',$submission_no);
+ 		//$finance=$this->query1($memo_id,'finance',$submission_no);
+ 		$approver=$this->query1($memo_id,'approver',$submission_no);
+		
+		$remark_reviewer=array();
+		$remark_recommender=array();
+		//$remark_finance=array();
+		$remark_approver=array();
+
+		if (!empty($reviewer)){
+			foreach ($reviewer as $value) {
+				
+				$remark_reviewer[]=$this->query2($memo_id,$value['NfReviewer']['user_id']);
+			}
+			
+		}
+
+		if (!empty($recommender)){
+			foreach ($recommender as $value) {
+				
+				$remark_recommender[]=$this->query2($memo_id,$value['NfReviewer']['user_id']);
+			}
+			
+		}
+
+		// if (!empty($finance)){
+		// 	foreach ($finance as $value) {
+				
+		// 		$remark_finance[]=$this->query2($memo_id,$value['NfReviewer']['user_id']);
+		// 	}
+			
+		// }
+
+		if (!empty($approver)){
+			foreach ($approver as $value) {
+				
+				$remark_approver[]=$this->query2($memo_id,$value['NfReviewer']['user_id']);
+			}
+			
+		}
+		$this->set('reviewer',$reviewer);
+ 		$this->set('recommender',$recommender);
+ 		//$this->set('finance',$finance);
+ 		$this->set('approver',$approver);
+ 		$this->set('remark_reviewer',$remark_reviewer);
+ 		$this->set('remark_recommender',$remark_recommender);
+ 		//$this->set('remark_finance',$remark_finance);
+ 		$this->set('remark_approver',$remark_approver);
+ 		$this->set('memo_id',$memo_id);
+
+
+	}	
+
+
+	private function query1($memo_id=null,$reviewer_type=null,$submission_no=null){
+
+		$reviewer_query = $this->NfReviewer->find('all',array(
+			'conditions' => array(
+				
+				'NfReviewer.memo_id' => $memo_id,
+				'NfReviewer.approval_type'=>$reviewer_type,
+			),
+			'order'=>array(
+				'NfReviewer.sequence'=>'ASC'
+			),
+			'contain'=>array(
+				'NfStatus'=>array(
+					'conditions'=>array('NfStatus.submission_no'=>$submission_no,'NfStatus.memo_id'=>$memo_id)
+				),
+				'User'=>array(
+					'fields'=>array('user_id','staff_name','designation'),
+					'Department'=>array('fields'=>array('department_name')),
+				),
+				// 'FRemark'=>array(
+				// 	'conditions'=>array('FRemark.memo_id'=>$memo_id),
+				// 	'fields'=>array('subject'),
+				// 	'order'=>array('FRemark.created'=>'ASC'),
+				// 	'User'=>array('fields'=>array('name')),
+				// 	'FRemarkFeedback'=>array('User'=>array('fields'=>array('name')),'order'=>array('FRemarkFeedback.created'=>'ASC')),
+				// 	'FRemarkAssign'=>array('User'=>array('fields'=>array('name'))),
+
+				// ),
+			)
+
+		));
+
+		return($reviewer_query);
+
+	}
+
+	private function query2($memo_id=null,$reviewer_uid=null){
+
+		$remark_query=$this->NfRemark->find('all',array(
+			'conditions' => array(
+		
+				'NfRemark.memo_id' => $memo_id,
+				'NfRemark.user_id'=>$reviewer_uid,
+			),
+			'fields'=>array('subject'),
+			'order'=>array('NfRemark.created'=>'ASC'),
+			'contain'=>array(
+				'User'=>array('fields'=>array('staff_name')),
+				'NfRemarkFeedback'=>array('fields'=>array('feedback','created'),'User'=>array('fields'=>array('staff_name')),'order'=>array('NfRemarkFeedback.created'=>'ASC')),
+				'NfRemarkAssign'=>array('fields'=>array(''),'User'=>array('fields'=>array('staff_name'))),
+			)
+
+		));
+
+		return($remark_query);
+
+	}
+
+	public function approveRejectMemo(){
+		$user = $this->getAuth();
+		$userid = $user['user_id'];
+
+		$memo_id = $this->request->data['NfStatus']['memo_id'];
+		// debug($this->request->data);exit();
+		$this->NfStatus->contain(array('NfReviewer'));
+		$NfStatus = $this->NfStatus->find('first',array('conditions'=>array('NfReviewer.user_id'=>$userid,'NfReviewer.memo_id'=>$memo_id),'order'=>array('NfStatus.submission_no DESC')));
+
+		$statusid = $NfStatus['NfStatus']['status_id'];
+		$submissionNo = $NfStatus['NfStatus']['submission_no'];
+		#access check
+		if(empty($NfStatus)){
+			$this->Session->setFlash("You don't have the privileges to approve/reject the memo <br><small> Please consult the administrator </small>",'flash.error');
+			$this->redirect($this->referer());
+		}
+		$remark = $this->request->data['NfStatus']['remark'];
+		$status = $this->request->data['NfStatus']['status'];
+
+		if($status == 'rejected'){
+			$this->NfStatus->updateAll(array(
+				'NfStatus.status'=>"'pending-rejected'",
+				),
+				array(
+					'NfStatus.submission_no'=>$submissionNo,
+					'NfStatus.memo_id'=>$memo_id,
+					'NfStatus.status'=>'pending',
+				)
+			);
+		}
+		$this->NfStatus->id = $statusid;
+		if( $this->NfStatus->updateAll(array(
+				'NfStatus.remark'=>"'".$remark."'",
+				'NfStatus.status'=>"'".$status."'",
+				),
+				array(
+					'NfStatus.submission_no'=>$submissionNo,
+					'NfStatus.status_id'=>$statusid)) 
+			){
+
+		#only send email after status changed
+		// if($status == 'approved'){
+		// 	$this->sendReviewEmail($memo_id);
+		// }
+		// elseif($status == 'rejected'){
+		// 	$this->sendRejectedEmail($memo_id);
+		// }
+
+		$this->Session->setFlash("You have ".$status." the memo <br><small> Thank You </small>",'flash.success');
+		$this->redirect(array('controller'=>'NfMemo','action'=>'dashboard',$memo_id));
+	}
+
+	}
+
+	
+
+/** public function editmemo($memo_id=null){
+	// 	$user = $this->getAuth();
+	// 	$userid = $user['user_id'];
+
+	// 	$memo = $this->NfMemo->find('first',array(
+	// 			'conditions' => array('NfMemo.memo_id' => $memo_id),
+	// 			'contain'=>array(
+	// 				'User'=>array('fields'=>array('staff_name','designation'),
+	// 				'Department'=>array('fields'=>array('department_name'))),
+	// 				'NfReviewer',	
+	// 				)
+
+	// 			)); 
+				
+
+	// 	if($this->request->is(array('post','put'))){
+	// 		$this->NfMemo->id = $memo_id;
+	// 	    $this->NfMemo->saveField('submission_no',$memo['NfMemo']['submission_no']+1);
+	// 		$this->request->data['NfMemo']['date_required']=date('Y-m-d',strtotime($this->request->data['NfMemo']['date_required']));
+
+	// 		if($this->NfMemo->save($this->request->data)){
+	// 			$memo_id = $this->NfMemo->id;				
+
+	// 			if($memo['NfMemo']['submission_no'] >=1 ){
+				
+	// 				$this->NfStatus->recursive = -1;
+	// 				$NfStatus = $this->NfStatus->find('all',array('conditions'=>array('NfStatus.memo_id'=>$memo_id,'NfStatus.submission_no'=>$memo['NfMemo']['submission_no'])));
+	// 			 debug($NfStatus);exit();
+	// 				foreach($NfStatus as $bs):
+	// 					$data['NfStatus']['reviewer_id'] = $bs['NfStatus']['reviewer_id'];
+	// 					$data['NfStatus']['memo_id'] = $bs['NfStatus']['memo_id'];
+	// 					$data['NfStatus']['status'] = 'pending';
+	// 					$data['NfStatus']['submission_no'] = $memo['NfMemo']['submission_no']+1;
+	// 					$this->NfStatus->create();
+	// 					$this->NfStatus->save($data);
+	// 				endforeach;
+	// 			}
+	// 			$this->redirect(array('action' => 'confirm/'.$memo_id));
+	// 			$this->Session->setFlash(__('The Memo has been Update successfully.'.$memo_id),'flash.success');
+
+	// 		}
+	// 		else{
+	// 			$this->Session->setFlash(__('The Memo could not be update. Please, try again.'),'flash.error');
+	// 		}
+	// 	}
+	// 	else{			
+			
+	// 		$this->request->data = $memo;//debug($NfMemo); exit();
+	// 			$this->set('memo_id',$memo_id);
+	// 			$this->set('memo',$memo);
+			
+
+	// 	}		
+
+}**/
+
+	public function memoAllrequestNon(){
+		
+		$user = $this->getAuth();
+		$department_id=$user['department_id'];
+		$this->NfMemo->contain(array('NfStatus','User'));
+		$memo=$this->NfMemo->find('all');
+
+
+		
+		//delete incomplete memo 
+		// if (!empty($memo)){
+
+		// 	foreach ($memo as $value) {
+		// 		if (empty($value['NfMemo']['ref_no']))
+		// 	 		$this->NfMemo->delete($value['NfMemo']['memo_id']);
+		// 	}
+
+		// }
+		$memo=$this->NfMemo->find('all',array('conditions'=>array('NfMemo.department_id'=>$department_id)));
+		$userRole = $user['role_id'];
+		$this->set('memo',$memo);
+		
+	}
+
+	public function memolistManagementNon(){
+		$user = $this->getAuth();
+		$this->NfMemo ->contain(array('NfStatus'));
+		$memo=$this->NfMemo ->find('all'); 
+		
+		//delete incomplete memo 
+		//if (!empty($memo)){
+
+		// 	foreach ($memo as $value) {
+		// 		if (empty($value['NfMemo ']['ref_no']))
+		// 	 		$this->NfMemo ->delete($value['NfMemo']['memo_id']);
+		// 	}
+
+		// }
+		
+		//also should display when other previous reviewer has approved
+		$this->NfStatus->contain(array(
+								'NfMemo',
+								'NfMemo.User'=>array('fields'=>array('staff_name')),
+								'NfMemo.NfStatus',
+								'NfMemo.Department'=>array('fields'=>array('department_name')),
+								'NfReviewer',
+							)
+						);
+		$pendingMemo = $this->NfStatus->find('all',array(
+									'conditions'=>array('NfStatus.status'=>'pending','NfReviewer.user_id'=>$user['user_id'],'NfStatus.submission_no = NfMemo.submission_no',
+														"NOT EXISTS (SELECT * FROM f_statuses WHERE f_statuses.reviewer_id < NfReviewer.reviewer_id AND f_statuses.memo_id = NfStatus.memo_id AND f_statuses.status ='pending')")
+									)); // this is truee laaa -- just need to make sure when equal to same find,use equal like in submission_no
+		$this->set('pendingMemo',$pendingMemo);
+		 //debug($pendingMemo);exit();
+
+		$this->NfStatus->contain(array(
+								'NfMemo',
+								'NfMemo.User'=>array('fields'=>array('staff_name')),
+								'NfMemo.NfStatus',
+								'NfMemo.Department'=>array('fields'=>array('department_name')),
+								'NfReviewer',
+							)
+						);
+		$reviewedMemo = $this->NfStatus ->find('all',array('conditions'=>array(
+													"OR"=>array(array("NfStatus .status"=>"approved"),array("NfStatus .status"=>"rejected")),
+													"NfStatus .submission_no = NfMemo .submission_no",
+													"NfReviewer .user_id"=>$user["user_id"]
+												)));
+		$this->set('reviewedMemo',$reviewedMemo);
+		//debug($reviewedMemo);exit();
+
+	}
+
+	/*
+
+	*	isInMemo()
+
+	*	< check if the reviewer are in the memo or not >
+
+	*	@ < author of function editor >
+
+	*/	
+	public function isInMemo($memo_id){
+		$user = $this->getAuth();
+
+		$this->NfReviewer->recursive = -1;;
+		$reviewer = $this->NfReviewer->find('first',array('conditions'=>array('NfReviewer.user_id'=>$user['user_id'],'NfReviewer.memo_id'=>$memo_id)));
+		// get NfMemo detail
+		$this->NfMemo->recursive = -1;
+		$memo = $this->NfMemo->find('first',array('conditions'=>array('NfMemo.memo_id'=>$memo_id)));
+
+		return ((!empty($reviewer)) || ($user['user_id'] ==  $memo['NfMemo']['user_id']));
+	}
+
+
+		
+		
+
+
+
+
+		
+
+		
+
+
+
+	
+
+		
+
+
+
+
+
+}
